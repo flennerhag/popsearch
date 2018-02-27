@@ -6,22 +6,26 @@ import time
 import logging
 from .eval import eval_step
 
+
 class Logger(logging.getLoggerClass()):
 
     """A Logger class with pre-set file formatting
 
     Args:
-        logger_count (int): the logger id
-        log_path (str): the parent directory of log files
+        jid (int): the logger id
+        path (str): the parent directory of log files
+        force (bool): force eval to 1
         **params: parameters of job configuration
     """
 
-    def __init__(self, jid, path, **params):
+    def __init__(self, jid, path, force=False, max_val=None, **params):
         jid = int(jid)
         path = str(path)
         self.jid = jid
         self.path = path
         self.params = params
+        self.force = force
+        self.max_val = max_val
 
         # Set path
         date = time.gmtime()
@@ -49,12 +53,16 @@ class Logger(logging.getLoggerClass()):
         pars = ""
         for i, (k, v) in enumerate(self.params.items()):
             if i == 0:
-                pars += "{}-{}-{}".format(k, type(v), v)
+                pars += "{},{},{}".format(k, type(v), v)
             else:
-                pars += ",{}-{}-{}".format(k, type(v), v)
+                pars += ";{},{},{}".format(k, type(v), v)
 
         self.info("JOB:{}\nDATE:{}\nPARAMS:{}".format(jid, _date, pars))
 
     def eval(self, step, value):
         self.info("EVAL:{}:{}".format(step, value))
+        if self.max_val is not None and value > self.max_val:
+            return 0
+        if self.force:
+            return 1
         return eval_step(self.path, value, step, self.jid)
