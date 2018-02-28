@@ -40,7 +40,7 @@ class Job(object):
         new_changes = False
 
         # Check num completed jobs
-        complete = 1
+        complete = 0
         files = os.listdir(self.path)
         for f in files:
             with open(os.path.join(self.path, f), 'r') as _f:
