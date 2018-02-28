@@ -26,7 +26,7 @@ def scan_log(log, curr_step, curr_vals, curr_ids):
     """Scan log for best eval step"""
     log_step = 0
     log_val = 1e9
-    log_id = int(log.name.split('/')[-1].split(':')[0].replace('\n', ''))
+    log_id = int(log.name.split('/')[-1].split('.')[0])
     for line in log:
         if line.startswith('EVAL:'):
             _, log_step, log_val = line.split(':')
@@ -76,7 +76,7 @@ def prune_logs(logs, min_step):
     # Select top x% of jobs in the best eval step
     s = min(len(vals), int(ceil(len(vals) * 0.2)))
     top_ids = [b for a, b in sorted(zip(vals, ids))][:s]
-    top_logs = [l for l in logs if int(l.split('/')[-1].split(':')[0]) in top_ids]
+    top_logs = [l for l in logs if int(l.split('/')[-1].split('.')[0]) in top_ids]
     return top_logs
 
 

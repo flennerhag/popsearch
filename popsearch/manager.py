@@ -5,18 +5,19 @@ from multiprocessing import Pool
 from numpy.random import RandomState
 
 from .sample import sample
-# pylint: disable=missing-docstring
 
 
 def init_job(path, rs):
     """Get a job id (i.e. seed) and force param"""
+    # Sample jid and force variables
     force = rs.uniform(0, 1) > 0.95
     jid = rs.randint(0, 1e6)
 
-    logs = os.listdir(path)
-    jids = [int(l.split(':')[0]) for l in logs]
-    if jid in jids:
+    # Check for file overlap and claim
+    file = os.path.join(path, str(jid) + '.log')
+    if os.path.exists(file):
         return init_job(path, rs)
+    open(file, 'w').close()
 
     return jid, force
 
@@ -83,7 +84,7 @@ class Job(object):
                         n_, v_ = int(n_), float(v_)
                         if v_ < v:
                             v = v_  # best score
-                            j = int(f.split(':')[0])  # best score job id
+                            j = int(f.split('.')[0])  # best score job id
                             n = n_  # best score eval step
         return j, v, n
 

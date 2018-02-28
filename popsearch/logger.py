@@ -35,13 +35,15 @@ class Logger(logging.getLoggerClass()):
             str(date.tm_mday),
             str(date.tm_hour)
         )
-        name = '{}:'.format(jid) + _date
-        path = os.path.join(path, name + '.log')
-        if os.path.exists(path):
-            os.unlink(path)
+
+        path = os.path.join(path, str(jid) + '.log')
+        with open(path, 'r') as f:
+            lines = f.read()
+            if lines != "":
+                raise OSError("Job file already exists")
 
         # Initialize logger
-        super(Logger, self).__init__(name)
+        super(Logger, self).__init__(str(jid))
 
         self.setLevel(logging.DEBUG)
         formatting = logging.Formatter('%(message)s')
