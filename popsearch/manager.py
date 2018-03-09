@@ -3,24 +3,80 @@
 import os
 from multiprocessing import Pool
 from numpy.random import RandomState
+from .state import State
+from .eval import find_leading_logs
+from .sample import sample, perturb, build_params
+from .sample import pareto_cumulative, inverse_transformation_sample
 
-from .sample import sample
 
+###############################################################################
+# START JOB
 
-def init_job(path, rs):
+def initialize(rs, config, params):
     """Get a job id (i.e. seed) and force param"""
-    # Sample jid and force variables
-    force = rs.uniform(0, 1) > 0.95
-    jid = rs.randint(0, 1e6)
+    force = rs.uniform(0, 1) < config.p_force
+    jid = rs.randint(0, int(1e6))
 
-    # Check for file overlap and claim
-    file = os.path.join(path, str(jid) + '.log')
+    file = os.path.join(config.path, str(jid) + '.log')
     if os.path.exists(file):
-        return init_job(path, rs)
+        return initialize(rs, config, params)
     open(file, 'w').close()
 
-    return jid, force
+    return get_state(jid, force, rs, config, params)
 
+
+def get_state(jid, force, rs, config, params, force_sample=False):
+    """Create a state instance for a jid"""
+    if force_sample or rs.rand() > config.p_perturb:
+        pars = sample(params)
+    else:
+        logs = os.listdir(config.path)
+        logs = [os.path.join(config.path, l) for l in logs]
+        logs = sample_job(logs, n_samples=1, alpha=config.alpha, rs=rs)
+        if len(logs) == 0:
+            return get_state(jid, force, rs, config, params, force_sample=True)
+
+        base = build_params(logs[0])
+        pars = perturb(params, base)
+
+    return State(jid, config, pars, force)
+
+
+def sample_job(logs, n_samples, alpha, rs):
+    """Sample a log file from current job state
+
+    :func:`sample_job` uses a discrete approximation of the pareto distribution
+    to sample a log file from the subset of log files at the current best
+    checkpoint step.
+
+    Args:
+        logs (list): list of log files paths (full path)
+        n_samples (int): number of samples requested
+        alpha (float): shape parameter, 1 is a good default
+        rs (RandomState): random state engine
+
+    Returns:
+        samples (list): list of sampled log files from the logs input list
+    """
+    _, vals, jids = find_leading_logs(logs, 0)
+    if not vals:
+        return vals
+
+    svi = [tup for tup in sorted(zip(vals, jids))]
+    vals = [tup[0] for tup in svi]
+    ids = [tup[1] for tup in svi]
+
+    cdf = pareto_cumulative(vals, alpha)
+    samples = [
+        ids[inverse_transformation_sample(cdf, rs)] for _ in range(n_samples)
+    ]
+
+    logs = [l for l in logs if int(l.split('/')[-1].split('.')[0]) in samples]
+    return logs
+
+
+###############################################################################
+# MONITOR POPSEARCH
 
 class Job(object):
 
@@ -46,7 +102,7 @@ class Job(object):
         for f in files:
             with open(os.path.join(self.path, f), 'r') as _f:
                 for l in _f:
-                    if l.startswith('EVAL:{}:'.format(self.n_step - 1)):
+                    if l.startswith('EVAL:{}:'.format(self.n_step)):
                         complete += 1
 
         if complete != self.complete:
@@ -89,87 +145,57 @@ class Job(object):
         return j, v, n
 
 
-def get_iterpars(iterpars, params, seed=None):
-    """Sample iterpar from cache of iterpars"""
-    n = len(iterpars)
-    if n == 0:
-        iterpar = None
-    else:
-        i = RandomState(seed + n).randint(0, n)
-        iterpar = iterpars.pop(i)
-    return check_iterpars(iterpar, params, seed)
+###############################################################################
+# RUN
+
+class Config(object):
+
+    """PopSearch configuration
+
+    Args:
+        callable (func): function to call during async loop
+        path (str): path to log directory
+        n_step (int): max number of eval steps
+        n_pop (int): max number of jobs at n_step (termination criteria)
+        p_force (float): probability of a force complete job, optional
+        p_perturb (float): probability of sampling and perturbing job, optional
+        alpha (float): shape parameter for perturbation sampling, optional
+        max_val (int, float): a max eval value for force termination, optional
+        seed (int): random seed, optional
+    """
+
+    __slots__ = [
+        'callable', 'path', 'n_step', 'n_pop', 'n_job', 'max_val', 'seed',
+        'p_force', 'p_perturb', 'alpha'
+    ]
+
+    def __init__(self, callable, path, n_step, n_pop, n_job, max_val=None,
+                 p_force=0.95, p_perturb=0.5, alpha=1, seed=None):
+        self.callable = callable
+        self.path = path
+        self.n_step = n_step
+        self.n_pop = n_pop
+        self.n_job = n_job
+        self.max_val = max_val
+        self.p_force = p_force
+        self.p_perturb = p_perturb
+        self.alpha = alpha
+        self.seed = seed
 
 
-def check_iterpars(iterpar, params, seed=None):
-    """Check iterpars and resample if necessary"""
-    if iterpar is None or iterpar == 0:
-        return {par: sample(args, seed=seed) for par, args in params.items()}
-
-    for k, v in params.items():
-        mn = mx = rng = None
-        if len(v) == 2:
-            _, rng = v
-        elif len(v) == 3:
-            _, mn, mx = v
-        else:
-            raise ValueError("params not properly specified")
-
-        if rng is not None:
-            if not iterpar[k] in rng:
-                iterpar[k] = sample(v, seed=seed)
-        else:
-            if (iterpar[k] > mx) or (iterpar[k] < mn):
-                iterpar[k] = sample(v, seed=seed)
-
-    return iterpar
-
-
-def get_async(results):
-    """Clear completed jobs from results cache"""
-    out, complete = [], []
-    for i in range(len(results)):
-        if results[i].ready():
-            complete.append(i)
-
-    for i in reversed(complete):
-        out.append(results.pop(i).get())
-
-    return out
-
-
-def run(config):
+def run(config, params):
     """Job manager"""
-    call = config['call']
-    path = config['path']
-    max_val = config['max_val']
-    params = config['params']
-    n_step = config['n_step']
-    n_pop = config['n_pop']
-    n_jobs = config['n_job']
-
-    # Seed job
-    if 'seed' in config:
-        seed = config['seed']
-    else:
+    if config.seed is None:
         from time import time
-        seed = int(time())
-    rs = RandomState(seed)
+        config.seed = int(time())
+    rs = RandomState(config.seed)
 
-    iterpars = []          # Cache of cleared results
-    results = []           # Cache of uncleared results
-    pool = Pool(n_jobs)    # Worker pool
-    job = Job(path, n_step, n_pop)
+    for par in params:
+        if par.seed is None:
+            par.reseed(rs.randint(0, int(1e6)))
+
+    pool = Pool(config.n_job)
+    job = Job(config.path, config.n_step, config.n_pop)
     while not job.state():
-        # Get unique job id : also seed for param sampling
-        jid, force = init_job(path, rs)
-
-        # Get params from batch of previous jobs
-        iterpar = get_iterpars(iterpars, params, jid)
-
-        # Run jobs
-        job_args = (jid, path, force, max_val)
-        res = pool.apply_async(call, (job_args, iterpar))
-        results.append(res)
-
-        # Update cache of cleared results
-        iterpars.extend(get_async(results))
+        state = initialize(rs, config, params)
+        pool.apply_async(config.callable, (state,))

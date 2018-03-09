@@ -1,4 +1,5 @@
-from .manager import run
-from .logger import Logger
+from .manager import run, Config
+from .state import Logger
+from .sample import Parameter
 
-__version__ = "0.0.1"
+__version__ = "0.0.3"

@@ -1,80 +1,94 @@
 """Eval routines
 
-Functions for evaluating state of job against cache.
+Functions for evaluating a job against against current state of popsearch.
 """
 import os
-from numpy import ceil, isnan, isinf
-from numpy.random import RandomState
-from .sample import samplePerturbed
+from numpy import ceil, isnan, isinf, inf
 
 
-def build_params(params):
-    """Build a parameter dictionary out of a params string"""
-    out = {}
-    params = params.split(';')
-    for par in params:
-        key, ptype, val = par.split(',')
-        if 'int' in ptype:
-            val = int(val)
-        elif 'float' in ptype:
-            val = float(val)
-        out[key] = val
-    return out
+###############################################################################
+
+def check_val(val):
+    """Check that a value is not None, NaN or Inf"""
+    return val is not None and not (isnan(val) or isinf(val))
 
 
-def scan_log(log, curr_step, curr_vals, curr_ids):
-    """Scan log for best eval step"""
-    log_step = 0
-    log_val = 1e9
-    log_id = int(log.name.split('/')[-1].split('.')[0])
-    for line in log:
-        if line.startswith('EVAL:'):
-            _, log_step, log_val = line.split(':')
-            log_step = int(log_step)
-            log_val = float(log_val.replace('\n', ''))
-
-    if not curr_vals or (log_step >= curr_step and (log_val < min(curr_vals))):
-        # New best eval step: reset counter
-        curr_step = log_step
-        curr_vals[:] = []
-        curr_ids[:] = []
-
-    if log_step == curr_step and (not isnan(log_val) or not isinf(log_val)):
-        # Add log to lists
-        curr_ids.append(log_id)
-        curr_vals.append(log_val)
+def test_val(lval, cvals):
+    """Wrapper around taking the min of a possibly empty list"""
+    if not cvals:
+        return True
+    else:
+        return lval < min(cvals)
 
 
-def read_log(log, step, values, params):
+def check_line_eval(line):
+    """Check a line in a log for the EVAL: flag and return status"""
+    ls, lv = None, None
+    if line.startswith('EVAL:'):
+        _, ls, lv = line.split(':')
+        ls = int(ls)
+        lv = float(lv.replace('\n', ''))
+    return ls, lv
+
+
+def read_log(log, step, values):
     """Read a log file at a given eval step"""
     lval = None
-    lpar = None
     for line in log:
-        if line.startswith('PARAMS:'):
-            lpar = line.split(':')[1].replace('\n', '')
-
         if line.startswith('EVAL:{}'.format(step)):
             lval = line.split(':')[2].replace('\n', '')
             lval = float(lval)
 
     if lval is not None and not isnan(lval) and not isinf(lval):
         values.append(lval)
-        params.append(build_params(lpar))
+
+
+def find_best_step(logs, min_step):
+    """Find current best checkpoint step"""
+    val = inf
+    step = None
+    for log in logs:
+        with open(log, 'r') as l:
+            log_step = None
+            log_val = inf
+            for line in l:
+                ls, lv = check_line_eval(line)
+                if check_val(lv) and lv < log_val:
+                    log_val = lv
+                    log_step = ls
+
+        if log_val < val and log_step >= min_step:
+            val = log_val
+            step = log_step
+    return step
+
+
+def find_leading_logs(logs, min_step):
+    """Find the checkpoint step with best loss and return jids and loss vals"""
+    step = find_best_step(logs, min_step)
+
+    vals, ids = [], []
+    for log in logs:
+        with open(log, 'r') as l:
+            log_id = int(l.name.split('/')[-1].split('.')[0])
+            for line in l:
+                log_step, log_val = check_line_eval(line)
+                if check_val(log_val) and log_step == step:
+                    vals.append(log_val)
+                    ids.append(log_id)
+
+    return step, vals, ids
 
 
 def prune_logs(logs, min_step):
-    """Split logs into good, bad and ugly based on current best checkpoint"""
-    # Find step with best loss
-    step, vals, ids = min_step, [], []
-    for log in logs:
-        with open(log, 'r') as l:
-            scan_log(l, step, vals, ids)
+    """Return top x% of logs in leading checkpoint step"""
+    step, vals, ids = find_leading_logs(logs, min_step)
 
     if not vals:
         return vals
 
     # Select top x% of jobs in the best eval step
-    s = min(len(vals), int(ceil(len(vals) * 0.2)))
+    s = min(len(vals), int(ceil(len(vals) * 0.5)))
     top_ids = [b for a, b in sorted(zip(vals, ids))][:s]
     top_logs = [l for l in logs if int(l.split('/')[-1].split('.')[0]) in top_ids]
     return top_logs
@@ -83,14 +97,16 @@ def prune_logs(logs, min_step):
 def extract_logs(step, logs):
     """Extract parameters and performance at eval step from sets of logs"""
     # Read values and parameters at STEP of most advanced jobs
-    values, params = [], []
+    values = []
     for log in logs:
         with open(log, 'r') as l:
-            read_log(l, step, values, params)
-    return values, params
+            read_log(l, step, values)
+    return values
 
 
-def eval_step(path, val, step, seed=None):
+###############################################################################
+
+def eval_step(path, val, step):
     """Evaluate a job at given checkpoint"""
     if isnan(val) or isinf(val):
         # Divergent job: cut
@@ -106,9 +122,9 @@ def eval_step(path, val, step, seed=None):
     # Check if current job in its current eval step
     # is comparable to, or better than, the evals of the
     # selected top logs at the current job's eval step
-    vals, params = extract_logs(step, logs)
+    vals = extract_logs(step, logs)
     if not vals:
-        # Guard against too early evaluation: continue job
+        # Too early evaluation: continue job
         return 1
 
     threshold = max(vals)
@@ -117,14 +133,4 @@ def eval_step(path, val, step, seed=None):
         # top 20% configs were at the current job's eval step: continue
         return 1
 
-    # Else: restart
-    # Need to determine whether to exploit or explore
-    rs = RandomState(seed)
-    if rs.uniform(0, 1) > 0.6:
-        # 20% of restarts are purely random
-        return 0
-
-    # 80 % of restarts are perturbations from top 20 %
-    pix = rs.randint(0, len(params))
-    ppars = params[pix]
-    return samplePerturbed(ppars, seed=seed + pix)
+    return 0
