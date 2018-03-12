@@ -14,15 +14,25 @@ from .sample import pareto_cumulative, inverse_transformation_sample
 
 def initialize(rs, config, params):
     """Get a job id (i.e. seed) and force param"""
-    force = rs.uniform(0, 1) < config.p_force
-    jid = rs.randint(0, int(1e6))
+    force = rs.rand() < config.p_force
+    jid = rs.randint(0, int(1e9))
 
-    file = os.path.join(config.path, str(jid) + '.log')
-    if os.path.exists(file):
+    state = get_state(jid, force, rs, config, params)
+    if not check_state(config, state):
         return initialize(rs, config, params)
-    open(file, 'w').close()
 
-    return get_state(jid, force, rs, config, params)
+    f = os.path.join(config.path, str(jid) + '.log')
+    if os.path.exists(f):
+        return initialize(rs, config, params)
+    open(f, 'w').close()
+    return state
+
+
+def check_state(config, state):
+    """Run a pre-check on a State instance"""
+    if config.precall is None:
+        return True
+    return config.precall(state)
 
 
 def get_state(jid, force, rs, config, params, force_sample=False):
@@ -166,12 +176,13 @@ class Config(object):
 
     __slots__ = [
         'callable', 'path', 'n_step', 'n_pop', 'n_job', 'max_val', 'seed',
-        'p_force', 'p_perturb', 'alpha'
+        'precall', 'p_force', 'p_perturb', 'alpha'
     ]
 
     def __init__(self, callable, path, n_step, n_pop, n_job, max_val=None,
-                 p_force=0.95, p_perturb=0.5, alpha=1, seed=None):
+                 precall=None, p_force=0.95, p_perturb=0.5, alpha=1, seed=None):
         self.callable = callable
+        self.precall = precall
         self.path = path
         self.n_step = n_step
         self.n_pop = n_pop
@@ -181,6 +192,20 @@ class Config(object):
         self.p_perturb = p_perturb
         self.alpha = alpha
         self.seed = seed
+
+
+
+def get_async(results):
+    """Clear completed jobs from results cache"""
+    # TODO: Use callback in apply_async
+    # Now, .get() will kill the entire popsearch job
+    complete = []
+    for i in range(len(results)):
+        if results[i].ready():
+            complete.append(i)
+
+    for i in reversed(complete):
+        results.pop(i).get()
 
 
 def run(config, params):
@@ -194,8 +219,11 @@ def run(config, params):
         if par.seed is None:
             par.reseed(rs.randint(0, int(1e6)))
 
+    results = []
     pool = Pool(config.n_job)
     job = Job(config.path, config.n_step, config.n_pop)
     while not job.state():
         state = initialize(rs, config, params)
-        pool.apply_async(config.callable, (state,))
+        res = pool.apply_async(config.callable, (state,))
+        results.append(res)
+        get_async(results)

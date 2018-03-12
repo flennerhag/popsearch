@@ -61,6 +61,8 @@ class State(object):
 
     def info(self, msg, *args, **kwargs):
         """Record job information"""
+        if self.logger is None:
+            self.logger = Logger(self)
         self.logger.info(msg, *args, **kwargs)
 
 

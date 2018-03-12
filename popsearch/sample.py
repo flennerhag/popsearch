@@ -129,7 +129,7 @@ class Parameter(object):
     def __init__(self, name, type, minmax=None, support=None, func=None,
                  perturb_range=None, seed=None, frozen=None):
 
-        if not frozen:
+        if frozen is None:
             if support is not None and minmax is not None:
                 raise ValueError("Cannot set both support and minmax")
             if type is not bool and ((support is None) and (minmax is None)):
@@ -264,11 +264,11 @@ class Parameter(object):
             val = uniform(*minmax, rs)
         elif self.type is bool:
             # No need to consider minmax or support
-            val = rs.rand(0, 1) >= 0.5
+            val = rs.rand() >= 0.5
         else:
             if minmax is not None:
                 val = rs.randint(*minmax)
             if support is not None:
                 val = self.support[rs.randint(0, len(support))]
 
-        return val
+        return self.transform(val)
