@@ -41,7 +41,7 @@ def get_state(jid, force, rs, config, params, force_sample=False):
         pars = sample(params)
     else:
         logs = os.listdir(config.path)
-        logs = [os.path.join(config.path, l) for l in logs]
+        logs = [os.path.join(config.path, l) for l in logs if l.endswith('.log')]
         logs = sample_job(logs, n_samples=1, alpha=config.alpha, rs=rs)
         if len(logs) == 0:
             return get_state(jid, force, rs, config, params, force_sample=True)

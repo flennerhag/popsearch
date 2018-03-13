@@ -116,7 +116,7 @@ def eval_step(path, val, step):
     # That is, find the best val, at some eval step,
     # and select the top 20% logs from that eval step
     logs = os.listdir(path)
-    logs = [os.path.join(path, l) for l in logs]
+    logs = [os.path.join(path, l) for l in logs if l.endswith('.log')]
     logs = prune_logs(logs, step)
 
     # Check if current job in its current eval step
