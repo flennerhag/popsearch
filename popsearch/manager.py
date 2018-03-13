@@ -1,6 +1,7 @@
 """Population based search
 """
 import os
+import time
 from multiprocessing import Pool
 from numpy.random import RandomState
 from .state import State
@@ -16,7 +17,6 @@ def initialize(rs, config, params):
     """Get a job id (i.e. seed) and force param"""
     force = rs.rand() < config.p_force
     jid = rs.randint(0, int(1e9))
-
     state = get_state(jid, force, rs, config, params)
     if not check_state(config, state):
         return initialize(rs, config, params)
@@ -172,15 +172,18 @@ class Config(object):
         alpha (float): shape parameter for perturbation sampling, optional
         max_val (int, float): a max eval value for force termination, optional
         seed (int): random seed, optional
+        buffer (int): number of jobs per worker to keep in buffer, default=2
+        sleep (float): seconds to wait before checking job completion, default=2
     """
 
     __slots__ = [
         'callable', 'path', 'n_step', 'n_pop', 'n_job', 'max_val', 'seed',
-        'precall', 'p_force', 'p_perturb', 'alpha'
+        'precall', 'p_force', 'p_perturb', 'alpha', 'buffer', 'sleep',
     ]
 
     def __init__(self, callable, path, n_step, n_pop, n_job, max_val=None,
-                 precall=None, p_force=0.95, p_perturb=0.5, alpha=1, seed=None):
+                 precall=None, p_force=0.95, p_perturb=0.5, alpha=1, seed=None,
+                 buffer=2, sleep=2):
         self.callable = callable
         self.precall = precall
         self.path = path
@@ -192,7 +195,8 @@ class Config(object):
         self.p_perturb = p_perturb
         self.alpha = alpha
         self.seed = seed
-
+        self.buffer = buffer
+        self.sleep = sleep
 
 
 def get_async(results):
@@ -200,8 +204,8 @@ def get_async(results):
     # TODO: Use callback in apply_async
     # Now, .get() will kill the entire popsearch job
     complete = []
-    for i in range(len(results)):
-        if results[i].ready():
+    for i, res in enumerate(results):
+        if res.ready():
             complete.append(i)
 
     for i in reversed(complete):
@@ -211,8 +215,7 @@ def get_async(results):
 def run(config, params):
     """Job manager"""
     if config.seed is None:
-        from time import time
-        config.seed = int(time())
+        config.seed = int(time.time())
     rs = RandomState(config.seed)
 
     for par in params:
@@ -223,7 +226,9 @@ def run(config, params):
     pool = Pool(config.n_job)
     job = Job(config.path, config.n_step, config.n_pop)
     while not job.state():
-        state = initialize(rs, config, params)
-        res = pool.apply_async(config.callable, (state,))
-        results.append(res)
         get_async(results)
+        if len(results) <= config.buffer * config.n_job:
+            state = initialize(rs, config, params)
+            res = pool.apply_async(config.callable, (state,))
+            results.append(res)
+        time.sleep(config.sleep)
