@@ -5,13 +5,12 @@ import time
 from multiprocessing import Pool
 from numpy.random import RandomState
 from .state import State
-from .eval import find_leading_logs
-from .sample import sample, perturb, build_params
-from .sample import pareto_cumulative, inverse_transformation_sample
+from .eval import sample_job
+from .sample import sample, perturb, build_params, pareto_cumulative
+from .utils import get_logs, get_jid
 
 
 ###############################################################################
-# START JOB
 
 def initialize(rs, config, params):
     """Get a job id (i.e. seed) and force param"""
@@ -30,9 +29,9 @@ def initialize(rs, config, params):
 
 def check_state(config, state):
     """Run a pre-check on a State instance"""
-    if config.precall is None:
+    if config.check_state is None:
         return True
-    return config.precall(state)
+    return config.check_state(state)
 
 
 def get_state(jid, force, rs, config, params, force_sample=False):
@@ -40,9 +39,8 @@ def get_state(jid, force, rs, config, params, force_sample=False):
     if force_sample or rs.rand() > config.p_perturb:
         pars = sample(params)
     else:
-        logs = os.listdir(config.path)
-        logs = [os.path.join(config.path, l) for l in logs if l.endswith('.log')]
-        logs = sample_job(logs, n_samples=1, alpha=config.alpha, rs=rs)
+        logs = get_logs(config.path)
+        logs = sample_job(logs, 1, rs, *config.perturb_cdf)
         if len(logs) == 0:
             return get_state(jid, force, rs, config, params, force_sample=True)
 
@@ -50,39 +48,6 @@ def get_state(jid, force, rs, config, params, force_sample=False):
         pars = perturb(params, base)
 
     return State(jid, config, pars, force)
-
-
-def sample_job(logs, n_samples, alpha, rs):
-    """Sample a log file from current job state
-
-    :func:`sample_job` uses a discrete approximation of the pareto distribution
-    to sample a log file from the subset of log files at the current best
-    checkpoint step.
-
-    Args:
-        logs (list): list of log files paths (full path)
-        n_samples (int): number of samples requested
-        alpha (float): shape parameter, 1 is a good default
-        rs (RandomState): random state engine
-
-    Returns:
-        samples (list): list of sampled log files from the logs input list
-    """
-    _, vals, jids = find_leading_logs(logs, 0)
-    if not vals:
-        return vals
-
-    svi = [tup for tup in sorted(zip(vals, jids))]
-    vals = [tup[0] for tup in svi]
-    ids = [tup[1] for tup in svi]
-
-    cdf = pareto_cumulative(vals, alpha)
-    samples = [
-        ids[inverse_transformation_sample(cdf, rs)] for _ in range(n_samples)
-    ]
-
-    logs = [l for l in logs if int(l.split('/')[-1].split('.')[0]) in samples]
-    return logs
 
 
 ###############################################################################
@@ -108,9 +73,9 @@ class Job(object):
 
         # Check num completed jobs
         complete = 0
-        files = os.listdir(self.path)
+        files = get_logs(self.path)
         for f in files:
-            with open(os.path.join(self.path, f), 'r') as _f:
+            with open(f, 'r') as _f:
                 for l in _f:
                     if l.startswith('EVAL:{}:'.format(self.n_step)):
                         complete += 1
@@ -138,20 +103,20 @@ class Job(object):
 
     def score(self):
         """Tracker for best score recorded"""
-        files = os.listdir(self.path)
+        files = get_logs(self.path)
         n = 0
         v = 1e9
         j = None
         for f in files:
-            with open(os.path.join(self.path, f), 'r') as _f:
+            with open(f, 'r') as _f:
                 for l in _f:
                     if l.startswith('EVAL:'):
                         _, n_, v_ = l.split(':')
                         n_, v_ = int(n_), float(v_)
                         if v_ < v:
-                            v = v_  # best score
-                            j = int(f.split('.')[0])  # best score job id
-                            n = n_  # best score eval step
+                            v = v_          # best score
+                            j = get_jid(f)  # best score job id
+                            n = n_          # best score eval step
         return j, v, n
 
 
@@ -176,40 +141,67 @@ class Config(object):
         sleep (float): seconds to wait before checking job completion, default=2
     """
 
-    __slots__ = [
-        'callable', 'path', 'n_step', 'n_pop', 'n_job', 'max_val', 'seed',
-        'precall', 'p_force', 'p_perturb', 'alpha', 'buffer', 'sleep',
-    ]
-
-    def __init__(self, callable, path, n_step, n_pop, n_job, max_val=None,
-                 precall=None, p_force=0.95, p_perturb=0.5, alpha=1, seed=None,
-                 buffer=2, sleep=2):
+    def __init__(
+            self, callable, path, n_step, n_pop, n_job, p_perturb=0.8,
+            min_eval_step=0, max_val=None, tolerance=None, check_state=None,
+            p_force=0., force_n_step=None, perturb_cdf=None, eval_cdf=None,
+            seed=None, n_eval_samples=100, buffer=2, sleep=0.1, plot=False):
         self.callable = callable
-        self.precall = precall
         self.path = path
         self.n_step = n_step
         self.n_pop = n_pop
         self.n_job = n_job
-        self.max_val = max_val
-        self.p_force = p_force
         self.p_perturb = p_perturb
-        self.alpha = alpha
-        self.seed = seed
+        self.min_eval_step = min_eval_step
+        self.max_val = max_val
+        self.tolerance = tolerance
+        self.check_state = check_state
+        self.p_force = p_force
         self.buffer = buffer
+        self.seed = seed
+        self.n_eval_samples = n_eval_samples
         self.sleep = sleep
+        self.plot = plot
+        self.force_n_step = force_n_step if force_n_step else int(n_step/10)
+
+        self.perturb_cdf = None
+        self.eval_cdf = None
+        self._set_cdf(perturb_cdf, eval_cdf)
+
+    def _set_cdf(self, p_cdf, e_cdf):
+        """Set the job perturb sampler cdf and the eval score sampler cdf."""
+
+        def _set_cdf(f, arg):
+            if f is None:
+                f = (pareto_cumulative, arg)
+            if isinstance(f, (float, int)):
+                f = (pareto_cumulative, arg)
+            if not isinstance(f, (tuple, list)):
+                raise ValueError(
+                    "Expected [p,e]_cdf=(f, args). Got {}".format(f))
+            return f
+
+        for i in zip(['perturb_cdf', 'eval_cdf'], [p_cdf, e_cdf], [1.0, 0.7]):
+            name, cdf, arg = i
+            tup = _set_cdf(cdf, arg)
+            setattr(self, name, tup)
 
 
-def get_async(results):
+def get_async(results, plotter=None):
     """Clear completed jobs from results cache"""
+    # TODO: plot completed jobs
     # TODO: Use callback in apply_async
     # Now, .get() will kill the entire popsearch job
     complete = []
-    for i, res in enumerate(results):
+    for i, (res, _) in enumerate(results):
         if res.ready():
             complete.append(i)
 
     for i in reversed(complete):
-        results.pop(i).get()
+        res, jid = results.pop(i)
+        res.get()
+        if plotter is not None:
+            plotter.plot(jid)
 
 
 def run(config, params):
@@ -222,13 +214,21 @@ def run(config, params):
         if par.seed is None:
             par.reseed(rs.randint(0, int(1e6)))
 
+    #######
+    plotter = None
+    if config.plot:
+        from .visualize import Plotter
+        # TODO: put plot_args in Config
+        plotter = Plotter(config.path, config.plot == 'save', False, {}, {}, {})
+    #######
+
     results = []
     pool = Pool(config.n_job)
     job = Job(config.path, config.n_step, config.n_pop)
     while not job.state():
-        get_async(results)
+        get_async(results, plotter)
         if len(results) <= config.buffer * config.n_job:
             state = initialize(rs, config, params)
             res = pool.apply_async(config.callable, (state,))
-            results.append(res)
+            results.append((res, state.jid))
         time.sleep(config.sleep)

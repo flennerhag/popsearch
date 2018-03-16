@@ -99,13 +99,12 @@ def inverse_transformation_sample(cdf, rs):
     Returns:
         idx (int): sampled draw from [0, len(array)]
     """
-    r = rs.rand(0, 1)
+    cdf = cdf + [1]
+    r = rs.rand()
     n = len(cdf)
-    for i in range(n):
-        if r - cdf[i] < 0:
-            break
-    if i == 0:
-        i = 1
+    for i in range(1, n):
+        if cdf[i] >= r:
+            return rs.randint(0, i)
     return rs.randint(0, i)
 
 
@@ -120,7 +119,8 @@ class Parameter(object):
     Args:
         name (str): name of the parameter
         type (obj): parameter type
-        func (func): transformation of uniform distribution, optional
+        func (tuple): transformation from basic uniform distribution, optional
+            Need to supply a tuple of functions for (transform, inverse_transform)
         minmax (tuple): tuple of (min, max) parameter value, optional
         support (list): acceptable parameter states, optional
         seed (int): seed for sampling, perturbation, and re-seeding.
@@ -150,7 +150,7 @@ class Parameter(object):
         """Copy instance"""
         return Parameter(**self.__dict__)
 
-    def transform(self, value):
+    def transform(self, value, inverse=False):
         """Set parameter state
 
         Args:
@@ -160,7 +160,8 @@ class Parameter(object):
             self (obj): instance with updated state
         """
         if self.func is not None:
-            value = self.func(value)
+            func = self.func[0] if not inverse else self.func[1]
+            value = func(value)
         return value
 
     def reseed(self, seed=None):
@@ -224,6 +225,7 @@ class Parameter(object):
 
         mx = None
         support = None
+        value = self.transform(value, inverse=True)
 
         if self.perturb_range is True:
             if self.support:

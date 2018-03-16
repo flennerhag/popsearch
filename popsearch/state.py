@@ -3,6 +3,7 @@
 import os
 import time
 import logging
+from numpy.random import RandomState
 from .eval import eval_step
 
 
@@ -22,13 +23,18 @@ class State(object):
     def __init__(self, jid, config, parameters, force=None):
         self.step = 0
         self.jid = jid
-        self.status = None
         self.config = config
         self.parameters = parameters
         self.force = force
         self.path = config.path
         self.max_val = config.max_val
+        self.tolerance = config.tolerance
+        self.min_eval_step = config.min_eval_step
+
         self.logger = None
+        self.status = None
+        self._lagged_status = None
+        self._rs = RandomState(self.jid)
 
     def __bool__(self):
         """Evaluate state"""
@@ -44,13 +50,24 @@ class State(object):
 
         status = None
         if self.force:
-            status = 1
-        if self.max_val is not None and value > self.max_val:
-            status = 0
+            if self.step <= self.config.force_n_step:
+                status = 1
+        if self.max_val is not None:
+            if value > self.max_val:
+                status = 0
+        if self.tolerance is not None and self._lagged_status is not None:
+            if self._lagged_status < value:
+                status = 0
+
         if status is None:
-            status = eval_step(self.path, value, self.step)
+            status = eval_step(
+                self.path, value, self.step, self._rs, self.min_eval_step,
+                self.config.n_eval_samples, *self.config.eval_cdf
+            )
 
         self.status = status
+        if self.tolerance is not None and self.step >= self.tolerance:
+            self._lagged_status = value
 
         if self.logger is None:
             self.logger = Logger(self)

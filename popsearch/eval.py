@@ -2,8 +2,9 @@
 
 Functions for evaluating a job against against current state of popsearch.
 """
-import os
-from numpy import ceil, isnan, isinf, inf
+from numpy import isnan, isinf, inf
+from .sample import inverse_transformation_sample
+from .utils import get_logs, jid_to_log
 
 
 ###############################################################################
@@ -35,7 +36,7 @@ def read_log(log, step, values):
     """Read a log file at a given eval step"""
     lval = None
     for line in log:
-        if line.startswith('EVAL:{}'.format(step)):
+        if line.startswith('EVAL:{}:'.format(step)):
             lval = line.split(':')[2].replace('\n', '')
             lval = float(lval)
 
@@ -66,7 +67,6 @@ def find_best_step(logs, min_step):
 def find_leading_logs(logs, min_step):
     """Find the checkpoint step with best loss and return jids and loss vals"""
     step = find_best_step(logs, min_step)
-
     vals, ids = [], []
     for log in logs:
         with open(log, 'r') as l:
@@ -80,20 +80,6 @@ def find_leading_logs(logs, min_step):
     return step, vals, ids
 
 
-def prune_logs(logs, min_step):
-    """Return top x% of logs in leading checkpoint step"""
-    step, vals, ids = find_leading_logs(logs, min_step)
-
-    if not vals:
-        return vals
-
-    # Select top x% of jobs in the best eval step
-    s = min(len(vals), int(ceil(len(vals) * 0.5)))
-    top_ids = [b for a, b in sorted(zip(vals, ids))][:s]
-    top_logs = [l for l in logs if int(l.split('/')[-1].split('.')[0]) in top_ids]
-    return top_logs
-
-
 def extract_logs(step, logs):
     """Extract parameters and performance at eval step from sets of logs"""
     # Read values and parameters at STEP of most advanced jobs
@@ -104,33 +90,75 @@ def extract_logs(step, logs):
     return values
 
 
+def sort_lists(*lists):
+    """Sort a list of lists based on the first list"""
+    out = [[] for _ in range(len(lists))]
+    for vals in sorted(zip(*lists)):
+        for i, val in enumerate(vals):
+            out[i].append(val)
+    return tuple(out)
+
+
 ###############################################################################
 
-def eval_step(path, val, step):
+def sample_cdf(cdf_vals, sample_vals, n_samples, rs, cdf, *cdf_args):
+    """Sample a cdf with given vals"""
+    sampled_cdf = cdf(cdf_vals, *cdf_args)
+    samples = [sample_vals[inverse_transformation_sample(sampled_cdf, rs)]
+               for _ in range(n_samples)]
+    return samples
+
+
+def sample_job(logs, n_samples, rs, cdf, *cdf_args):
+    """Sample a log file from current job state
+
+    :func:`sample_job` uses a discrete approximation of the pareto distribution
+    to sample a log file from the subset of log files at the current best
+    checkpoint step.
+
+    Args:
+        logs (list): list of log files paths (full path)
+        n_samples (int): number of samples requested
+        alpha (float): shape parameter, 1 is a good default
+        rs (RandomState): random state engine
+
+    Returns:
+        samples (list): list of sampled log files from the logs input list
+    """
+    _, vals, jids = find_leading_logs(logs, 1)
+    if not vals:
+        return vals
+
+    vals, jids = sort_lists(vals, jids)
+    samples = sample_cdf(vals, jids, n_samples, rs, cdf, *cdf_args)
+    return jid_to_log(samples, logs=logs)
+
+
+def eval_step(path, val, step, rs, min_step, n_samples, cdf, *cdf_args):
     """Evaluate a job at given checkpoint"""
     if isnan(val) or isinf(val):
-        # Divergent job: cut
         return 0
 
-    # Select logs of the current best population
-    # That is, find the best val, at some eval step,
-    # and select the top 20% logs from that eval step
-    logs = os.listdir(path)
-    logs = [os.path.join(path, l) for l in logs if l.endswith('.log')]
-    logs = prune_logs(logs, step)
+    if min_step is None:
+        min_step = step
+    min_step = max(min_step, step)
 
-    # Check if current job in its current eval step
-    # is comparable to, or better than, the evals of the
-    # selected top logs at the current job's eval step
+    logs = get_logs(path)
+    best_step, best_vals, best_jids = find_leading_logs(logs, min_step)
+    if not best_vals:
+        return 1
+
+    logs = jid_to_log(best_jids, path)
     vals = extract_logs(step, logs)
-    if not vals:
-        # Too early evaluation: continue job
-        return 1
+    best_vals, vals = sort_lists(best_vals, vals)
+    samples = sample_cdf(best_vals, vals, n_samples, rs, cdf, *cdf_args)
 
-    threshold = max(vals)
+    from numpy import std, mean
+    v = sum(samples) / n_samples
+    x = max(0, best_step - step) / best_step
+    modifier = 1 + (1.5 * x) ** 4
+    threshold = modifier * v
+#    print(val, v, std(samples), mean(best_vals), mean(vals), threshold, modifier, best_step, step)
     if val <= threshold:
-        # Current job is comparable to or better than what the
-        # top 20% configs were at the current job's eval step: continue
         return 1
-
     return 0
