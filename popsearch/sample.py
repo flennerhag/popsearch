@@ -26,7 +26,17 @@ def sample(params):
     """Sample parameters"""
     out = {}
     for par in params:
-        out[par.name] = par.sample()
+        if not isinstance(par, Parameter):
+            # Nested sampling
+            par, pparams = par
+
+            ps = par.sample()
+            pparams = pparams[ps]
+
+            out[par.name] = ps
+            out.update(sample(pparams))
+        else:
+            out[par.name] = par.sample()
     return out
 
 
@@ -34,8 +44,19 @@ def perturb(params, values):
     """Generate a perturbation of a params dict"""
     out = {}
     for par in params:
-        val = values[par.name]
-        out[par.name] = par.perturb(val)
+        if not isinstance(par, Parameter):
+            # Nested sampling
+            par, pparams = par
+
+            val = values[par.name]
+            ps = par.perturb(val)
+            pparams = pparams[ps]
+
+            out[par.name] = ps
+            out.update(perturb(pparams, values))
+        else:
+            val = values[par.name]
+            out[par.name] = par.perturb(val)
     return out
 
 
@@ -108,6 +129,14 @@ def inverse_transformation_sample(cdf, rs):
     return rs.randint(0, i)
 
 
+def sample_cdf(cdf_vals, sample_vals, n_samples, rs, cdf, *cdf_args):
+    """Sample a cdf with given vals"""
+    sampled_cdf = cdf(cdf_vals, *cdf_args)
+    samples = [sample_vals[inverse_transformation_sample(sampled_cdf, rs)]
+               for _ in range(n_samples)]
+    return samples
+
+
 ###############################################################################
 
 class Parameter(object):
@@ -144,10 +173,17 @@ class Parameter(object):
         self.frozen = frozen
         self.minmax = minmax
         self.support = support
-        self.perturb_range = perturb_range if perturb_range is not None else PERTURB_RANGE[type]
+
+        if perturb_range is None:
+            perturb_range = PERTURB_RANGE[type]
+        self.perturb_range = perturb_range
 
     def copy(self):
-        """Copy instance"""
+        """Copy instance
+
+        Returns:
+            inst (Parameter): copy of instance
+        """
         return Parameter(**self.__dict__)
 
     def transform(self, value, inverse=False):
@@ -155,9 +191,10 @@ class Parameter(object):
 
         Args:
             value (obj): value to set state to
+            inverse (bool): inverse transformation
 
         Returns:
-            self (obj): instance with updated state
+            transformed (int, float, str, bool): transformed value
         """
         if self.func is not None:
             func = self.func[0] if not inverse else self.func[1]
@@ -174,7 +211,7 @@ class Parameter(object):
             seed (int): seed to use to draw new seed, optional
 
         Returns:
-            self (obj): re-seeded instance.
+            self (Parameter): re-seeded instance.
         """
         if seed is None:
             seed = self.seed
@@ -239,18 +276,22 @@ class Parameter(object):
                 value * (1 + self.perturb_range[1])
             )
 
-        if self.type is int:
-            if self.minmax:
-                mx = (
-                    value - self.perturb_range[0],
-                    value + self.perturb_range[1]
-                )
-            if self.support:
-                support = self.support
+        if self.type is int and self.minmax:
+            mx = (
+                value - self.perturb_range[0],
+                value + self.perturb_range[1]
+            )
 
-        # Prune outlying support
-        if support:
-            support = [s for s in support if s in self.support]
+        if (self.type is int or self.type is str) and self.support:
+            # We assume perturbation is wrt index position in this case
+            for i, val in enumerate(support):
+                if val == value:
+                    break
+            smin = max(i - self.perturb_range[0], 0)
+            smax = min(i + self.perturb_range[1] + 1, len(support))
+            support = self.support[smin:smax]
+
+        # Prune outlying support for min-max ranges
         if mx:
             mx = (max(mx[0], self.minmax[0]),
                   min(mx[1], self.minmax[1]))
