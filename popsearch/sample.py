@@ -284,11 +284,11 @@ class Parameter(object):
 
         if (self.type is int or self.type is str) and self.support:
             # We assume perturbation is wrt index position in this case
-            for i, val in enumerate(support):
+            for i, val in enumerate(self.support):
                 if val == value:
                     break
             smin = max(i - self.perturb_range[0], 0)
-            smax = min(i + self.perturb_range[1] + 1, len(support))
+            smax = min(i + self.perturb_range[1] + 1, len(self.support))
             support = self.support[smin:smax]
 
         # Prune outlying support for min-max ranges

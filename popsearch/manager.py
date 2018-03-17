@@ -71,8 +71,6 @@ class Perturb(object):
             p_reset = rs.rand()
             if p_reset <= self.p_reset:
                 self._p_perturb = 1.0
-
-        print(perturb, p_perturb, self._p_perturb)
         return perturb
 
     def reset(self):
