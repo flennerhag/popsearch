@@ -38,6 +38,18 @@ def jid_to_log(jids, path="", logs=None):
     return [l for l in logs if get_jid(l) in jids]
 
 
+def parse_params(log):
+    params = None
+    with open(log, 'r') as log:
+        for line in log:
+            if line.startswith('PARAMS:'):
+                params = line.split(':')[1].split(';')
+                break
+
+    assert params is not None, "No parameters found in log file"
+    return params
+
+
 def sort_lists(*lists):
     """Sort a list of lists based on the first list"""
     out = [[] for _ in range(len(lists))]
@@ -75,13 +87,9 @@ def find_best_step(logs, min_step, return_val=False):
     val = inf
     step = None
     for log in logs:
-        log_step = None
-        log_val = inf
-        for ls, lv in eval_lines(log):
-            if check_val(lv) and lv < log_val:
-                log_val = lv
-                log_step = ls
-
+        log_step, log_val = get_score(log, min_step, best=True)
+        if not check_val(log_val):
+            continue
         if log_val < val and log_step >= min_step:
             val = log_val
             step = log_step
@@ -106,3 +114,44 @@ def find_leading_logs(logs, min_step):
                 best_logs.append(log)
 
     return best_step, best_vals, best_jids, best_logs
+
+
+def get_score(log, min_step, best=True):
+    """Find the best score in a log file"""
+
+    def criterion(val, benchmark):
+        if not check_val(val):
+            return False
+
+        if benchmark is None:
+            return True
+
+        if best:
+            if val < benchmark:
+                return True
+            return False
+        if val < benchmark:
+            return False
+        return True
+
+    best_step = None
+    best_val = None
+    for line_step, line_val in eval_lines(log):
+        if line_step is None or line_step < min_step:
+            continue
+        if criterion(line_val, best_val):
+            best_val = line_val
+            best_step = line_step
+    return best_step, best_val
+
+
+def get_best_scores(logs, min_step):
+    """Find the checkpoint step with best loss and return jids and loss vals"""
+    best_step, best_val, best_log = [], [], []
+    for log in logs:
+        ls, lv = get_score(log, min_step, best=True)
+        if ls is not None and check_val(lv):
+            best_step.append(ls)
+            best_val.append(lv)
+            best_log.append(log)
+    return best_step, best_val, best_log

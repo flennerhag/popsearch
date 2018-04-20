@@ -2,13 +2,16 @@ import os
 import matplotlib.pyplot as plt
 
 
-def get_fig_name(path):
+def get_fig(path, kwargs):
     """Get unique figure name"""
     i = 0
     while True:
-        f = os.path.join(path, str(i))
+        f = os.path.join(path, 'fig-{}'.format(i))
+        if 'format' in kwargs:
+            f = '{}.{}'.format(f, kwargs['format'])
         if not os.path.exists(f):
             return f
+        i += 1
 
 
 class Plotter(object):
@@ -38,8 +41,13 @@ class Plotter(object):
         self._plot_count = 0
         self._cm = [plt.cm.rainbow(i) for i in [i / 10 for i in range(1, 21)]]
 
-        plt.ion()
+        if self.save:
+            fig_path = os.path.join(path, 'figs')
+            self.fig_path = fig_path
+            if not os.path.exists(fig_path):
+                os.mkdir(fig_path)
 
+        plt.ion()
         f, ax = plt.subplots(**fig_kwargs)
         self._f = f
         self._ax = ax
@@ -57,7 +65,7 @@ class Plotter(object):
         self._plot_count = (self._plot_count + 1) % 10
 
         if self.save:
-            fig_name = get_fig_name(self.path)
+            fig_name = get_fig(self.fig_path, self.save_kwargs)
             plt.savefig(fig_name, **self.save_kwargs)
 
     def load_log(self, log):

@@ -2,6 +2,7 @@
 Routines for sampling parameters
 """
 from numpy.random import RandomState
+from .utils import parse_params
 
 
 ###############################################################################
@@ -73,22 +74,28 @@ def get_type(type_name, value):
     raise ValueError("Type format not understood")
 
 
+def get_param(param):
+    """Read parameter and convert to proper type"""
+    pname, ptype, pvalue = param.split(',')
+    pvalue = get_type(ptype, pvalue)
+    return pname, ptype, pvalue
+
+
 def build_params(log_path):
     """Build a parameter dictionary from a log file."""
-    params = None
-    with open(log_path, 'r') as log:
-        for line in log:
-            if line.startswith('PARAMS:'):
-                params = line.split(':')[1].split(';')
-                break
-
-    assert params is not None, "No parameters found in log file"
+    if isinstance(log_path, str):
+        params = [parse_params(log_path)]
+    else:
+        params = [parse_params(log) for log in log_path]
 
     out = {}
-    for par in params:
-        pname, ptype, pvalue = par.split(',')
-        pvalue = get_type(ptype, pvalue)
-        out[pname] = pvalue
+    n_samp = len(params)
+    n_pars = len(params[0])
+    for i in range(n_pars):
+        l = i % n_samp
+        param = params[l][i]
+        parname, _, parval = get_param(param)
+        out[parname] = parval
     return out
 
 

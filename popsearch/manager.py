@@ -6,8 +6,9 @@ from multiprocessing import Pool
 from numpy.random import RandomState
 from .state import State
 from .sample import sample, pareto_cumulative
-from .rules import job_sample, eval_sample, eval_predict, eval_double
 from .utils import get_logs, get_jid, eval_lines, check_val
+from .rules import (job_sample_full, job_sample_partial,
+                    eval_sample, eval_predict, eval_double, eval_triangle)
 
 
 ###############################################################################
@@ -54,8 +55,9 @@ def get_state(jid, force, rs, config, params, perturb, force_sample=False):
 # MONITOR POPSEARCH
 class Perturb(object):
 
-    def __init__(self, min_p, decay, p_reset):
+    def __init__(self, min_p, max_p, decay, p_reset):
         self.min_p = min_p
+        self.max_p = max_p
         self.decay = decay
         self.p_reset = p_reset
         self._p_perturb = min_p
@@ -64,17 +66,21 @@ class Perturb(object):
         p_perturb = rs.rand()
         perturb = p_perturb <= self._p_perturb
 
+        _p_perturb = self._p_perturb
+
         if perturb:
             self._p_perturb = max(self.min_p, self._p_perturb * self.decay)
 
         if self._p_perturb == self.min_p:
             p_reset = rs.rand()
             if p_reset <= self.p_reset:
-                self._p_perturb = 1.0
+                self._p_perturb = self.max_p
+
+#        print("{:1d} {:.2f} {:.2f}".format(int(1 * perturb), p_perturb, _p_perturb))
         return perturb
 
     def reset(self):
-        self._p_perturb = 1.0
+        self._p_perturb = self.max_p
 
 
 class Job(object):
@@ -164,15 +170,15 @@ class Config(object):
                  n_step,
                  n_pop,
                  n_job,
-                 perturb=(0.2, 0.9, 0.05),
+                 perturb=(0.2, 1.0, 0.9, 0.05),
                  min_eval_step=0,
                  max_val=None,
                  tolerance=None,
                  check_state=None,
                  p_force=0.,
                  force_n_step=None,
-                 perturb_rule=('sample', 'pareto', (1.0,)),
-                 eval_rule=('sample', 'pareto', (1.0,)),
+                 perturb_rule=('sample', 'pareto', (1.5,)),
+                 eval_rule=('sample', 'pareto', (1.5,)),
                  seed=None,
                  n_eval_samples=100,
                  buffer=2,
@@ -212,19 +218,31 @@ class Config(object):
                 a = tup[2]
                 if f == 'pareto':
                     f = pareto_cumulative
-                return default_rule[0], f, a
+                    d = default_rule[0]
+                elif f == 'partial':
+                    f = pareto_cumulative
+                    d = default_rule[1]
+                else:
+                    raise ValueError("decision rule option not recognized.")
+                return d, f, a
+
             if tup[0] == 'predict':
                 a = tup[1]
                 return default_rule[1], a
+
             if tup[0] == 'double':
                 f = pareto_cumulative if tup[1] is None else tup[1]
                 a = (1.0,) if tup[2] is None else tup[2]
                 w = int(self.n_step / 10) if tup[3] is None else tup[3]
                 return default_rule[2], f, a, w
+
+            if tup[0] == 'triangle':
+                return default_rule[3],
+
             return tup
 
-        self.perturb_rule = get_default(pt, [job_sample])
-        self.eval_rule = get_default(ev, [eval_sample, eval_predict, eval_double])
+        self.perturb_rule = get_default(pt, [job_sample_full, job_sample_partial])
+        self.eval_rule = get_default(ev, [eval_sample, eval_predict, eval_double, eval_triangle])
 
     def _set_plot_config(self, plot, plot_config):
         """Set plot configuration if applicable"""
@@ -236,7 +254,7 @@ class Config(object):
             'semilogy': False,
             'fig_kwargs': {},
             'plot_kwargs': {},
-            'save_kwargs': {},
+            'save_kwargs': {'dpi': 300, 'format': 'jpg'},
         }
 
         if plot_config is None:
@@ -265,6 +283,14 @@ def get_async(results, plotter=None):
             plotter.plot(jid)
 
 
+def cleanup(results):
+    """Ensure cached jobs are retrieved"""
+    print("Terminating PopSearch...", end="\r")
+    for res, _ in results:
+        res.get()
+    print("done.")
+
+
 def run(config, params):
     """Job manager"""
     if config.seed is None:
@@ -287,10 +313,13 @@ def run(config, params):
     pool = Pool(config.n_job)
     perturb = Perturb(*config.perturb)
     job = Job(config.path, config.n_step, config.n_pop, perturb)
-    while not job.state():
-        get_async(results, plotter)
-        if len(results) <= config.buffer * config.n_job:
-            state = initialize(rs, config, params, perturb)
-            res = pool.apply_async(config.callable, (state,))
-            results.append((res, state.jid))
-        time.sleep(config.sleep)
+    try:
+        while not job.state():
+            get_async(results, plotter)
+            if len(results) <= config.buffer * config.n_job:
+                state = initialize(rs, config, params, perturb)
+                res = pool.apply_async(config.callable, (state,))
+                results.append((res, state.jid))
+            time.sleep(config.sleep)
+    except KeyboardInterrupt:
+        cleanup(results)
