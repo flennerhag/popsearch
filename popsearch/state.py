@@ -102,10 +102,6 @@ class Logger(logging.getLoggerClass()):
         )
 
         path = os.path.join(self.path, str(self.jid) + '.log')
-        with open(path, 'r') as f:
-            lines = f.read()
-            if lines != "":
-                raise OSError("Job file already exists")
 
         # Initialize logger
         super(Logger, self).__init__(str(self.jid))
