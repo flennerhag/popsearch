@@ -6,7 +6,7 @@ from multiprocessing import Pool
 from numpy.random import RandomState
 from .state import State
 from .sample import sample, pareto_cumulative
-from .utils import get_logs, get_jid, eval_lines, check_val
+from .utils import get_logs, get_jid, eval_lines, check_val, CallHandle
 from .rules import (job_sample_full, job_sample_partial,
                     eval_sample, eval_predict, eval_double, eval_triangle)
 
@@ -313,13 +313,12 @@ def run(config, params):
     pool = Pool(config.n_job)
     perturb = Perturb(*config.perturb)
     job = Job(config.path, config.n_step, config.n_pop, perturb)
-    try:
-        while not job.state():
-            get_async(results, plotter)
-            if len(results) <= config.buffer * config.n_job:
-                state = initialize(rs, config, params, perturb)
-                res = pool.apply_async(config.callable, (state,))
-                results.append((res, state.jid))
-            time.sleep(config.sleep)
-    except KeyboardInterrupt:
-        cleanup(results)
+    while not job.state():
+        get_async(results, plotter)
+        if len(results) <= config.buffer * config.n_job:
+            state = initialize(rs, config, params, perturb)
+            res = pool.apply_async(
+                CallHandle(config.callable), (state,))
+            results.append((res, state.jid))
+        time.sleep(config.sleep)
+    cleanup(results)

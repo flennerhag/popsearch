@@ -5,6 +5,8 @@ import time
 import logging
 from numpy.random import RandomState
 
+from .utils import StateInterrupt
+
 
 class State(object):
 
@@ -71,6 +73,8 @@ class State(object):
 
         if self.status == 0:
             self.logger = None
+            self.info("STOP: evaluation failed.")
+            raise StateInterrupt
 
     def info(self, msg, *args, **kwargs):
         """Record job information"""

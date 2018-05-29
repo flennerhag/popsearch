@@ -5,6 +5,24 @@ from numpy import isnan, isinf, inf
 
 
 ###############################################################################
+class StateInterrupt(KeyboardInterrupt):
+
+    """Terminate a job given an evaluation of its state."""
+
+
+class CallHandle(object):
+
+    def __init__(self, f):
+        self.f = f
+
+    def __call__(self, *args):
+        try:
+            self.f(*args)
+        except StateInterrupt:
+            return None
+        return
+
+###############################################################################
 
 def check_val(val):
     """Check that a value is not None, NaN or Inf"""
