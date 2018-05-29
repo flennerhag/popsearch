@@ -115,7 +115,7 @@ def eval_predict(state, window_size):
     x = [[1, i] for i in range(1 + hist_step, curr_step + 1)]
     y = state.values[-window_size:]
 
-    coef, _, _, _ = lstsq(x, y)
+    coef, _, _, _ = lstsq(x, y, rcond=None)
 
     logs = get_logs(state.path)
     _, v = find_best_step(logs, state.config.min_eval_step, return_val=True)
